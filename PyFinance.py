@@ -9,11 +9,14 @@ William Murphy
 4/15/2018
     - first crack at an API for
     yahoo finance that we could use
-    for future work.
-    
+    for future work. Tried to go with a more
+    functional style.
     TODO:
         - generalize it(i.e. allow for any number of urls)
-        - many things ...
+        - make use of itertools.partial for a more pipelined 
+        approach.
+        - add other useful forms of data.
+        - apply generators and iterators and chunking.
         
         
 """
