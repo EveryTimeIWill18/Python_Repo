@@ -1,228 +1,211 @@
-import Tableau_Server
-from Tableau_Server import *
-import TempFiles
-from TempFiles import *
-import xml.etree.ElementTree as ET
-import datetime
+import os
+import sys
 import time
-from dateutil.parser import parse
-import tempfile
-import zlib
+from zipfile import ZipFile
 import zipfile
-import shutil
+from pprint import pprint
+import xml.etree.ElementTree as et
+from datetime import date, datetime, timedelta
+import pandas as pd
+import tableauserverclient as tsc
+
+	
+
+AUTH = dict()
+logging = dict() 
 
 
-class Node():
-    """node class for xml tree traversing"""
-    def __init__(self, value):
-        """init"""
-        self.head = value
-        self.current = self.head
-        self.next = None
-
-    def get_next(self, value):
-        """set the value of the next node"""
-        self.next = value
-
-
-class Workbook(TableauServer):
-    """
-        class:
-            tableau workbook class
-        superclass:
-            TableauServer
-    """
-
-    def __init__(self):
-        """init"""
-        # --- from TempFiles class
-        self.temp_file_exists = False
-        self.wrkbk_is_published = False
-        self.temp_file = TempFile()
-       # --- Workbook parameters
-        self.tableau_file = None
-        self.tableau_zipfile = None
-        self.tableau_workbook = None
-        self.is_archived_file = False
-        super().__init__()
-
-    def get_workbook_from_srvr(self, workbook_name, new_name):
-        """get workbook from the server"""
-        self.temp_file.build_dir()    # if temp dir exists mk dir else, create and mk dir
-        #print("temp file exists?  {}\n".format(tableau_temp_dir.temp_file_exists))
-        if self.temp_file.temp_file_exists is True:
-            self.temp_file_exists = True
-        try:
-            if workbook_name not in self.workbooks.keys():
-                raise KeyError('Err[Workbook name is not associated with any keys]\n')
-            else:
-                wb_id = self.workbooks.get(workbook_name)   # workbook {name: id} found in dictionary
-                try:
-                    wb_file = self.creds_dict.get("server").workbooks.download(wb_id, str(os.getcwd()))
-                except ValueError:
-                    print('Workbook could not be downloaded! \n')
-                except Exception:
-                    print('uncaught exception was raised! \n')
-        except KeyError as ke:
-            print(str(ke))
-        except Exception:
-            print('uncaught exception was raised! \n')
-
-    def download_workbook(self, dl_path, wb_name, new_wb_name):
-        """download workbook of interest"""
-        # set the path for the workbook to be downloaded
-
-        try:
-            if os.path.exists(dl_path):
-                os.chdir(dl_path)
-            else:
-                raise OSError("path not found\n")
-        except OSError as oe:
-            print(oe)
-        except Exception:
-            print("uncaught path exception was raised\n")
-
-        # search for workbook id on the Tableau server
-        try:
-            if wb_name not in self.workbooks.keys():
-                raise ValueError("workbook not found\n")
-            else:
-                wb_id = self.workbooks.get(wb_name)
-                try:
-                    wb_file = self.creds_dict.get("server").workbooks.download(wb_id, dl_path)
-                    print('files saved ...\n')
-                    for dl_path, _, new_wb_name in os.walk(dl_path):
-                        for f in new_wb_name:
-                            print(f)
-                except ValueError:
-                    print("workbook could not be downloaded\n")
-        except ValueError as ve:
-            print(ve)
-        except Exception:
-            print("uncaught workbook exception was raised\n")
-        finally:
-            print("exiting download process ...\n")
-
-    def read_xml_from_twb_twbx(self):
-        """read the xml from twb or twbx file
-        NOTE: dependeing on the file type, different
-        methods exist for reading in the xml"""
-        temp_files = [subfile for _, _, f in os.walk(str(os.getcwd())) for subfile in f]
-        self.tableau_file = str(*temp_files)
-        if zipfile.is_zipfile(self.tableau_file):
-            # --- if file is .twbx then the xml is contained in a zipped file
-            zip_file = zipfile.ZipFile(self.tableau_file)
-            self.tableau_workbook = self.tableau_file
-            archived_files = list(filter(lambda x: x.split('.')[-1] in ('twb', 'tds'),
-                                         zip_file.namelist()))
-            print("twbx archives: {}".format(archived_files))
-            self.tableau_workbook = zip_file.extract(*archived_files, path=str(os.getcwd()))
-        else:
-            # --- if file is .twb then xml is easily accessible
-            self.tableau_workbook = self.tableau_file
-
-    def open_workbook_xml(self, f_path, wb_name):
-        """check to see if tableau download is zipped"""
-        try:
-            if os.path.exists(f_path):
-                try:
-                    if os.path.isfile(f_path + '\\' + wb_name):
-                        self.tableau_file = f_path + '\\' + wb_name
-                        if zipfile.is_zipfile(self.tableau_file):
-                            #--- zipfile parse code here
-                            zip_file = zipfile.ZipFile(self.tableau_file)
-                            self.tableau_workbook = self.tableau_file
-                            archived_files = list(filter(lambda x: x.split('.')[-1] in ('twb', 'tds'),
-                                                    zip_file.namelist()))
-                            print("twbx archives: {}".format(archived_files))
-                            self.tableau_workbook = zip_file.extract(*archived_files, path=f_path)
-                        else:
-                            #--- no zipfile process needed
-                            self.tableau_workbook = self.tableau_file
-                    else:
-                        raise FileNotFoundError("Err[file could nto be located\n]")
-                except FileNotFoundError as fe:
-                    print(fe)
-            else:
-                raise OSError("path not found\n")
-        except OSError as oe:
-            print(oe)
-
-
-    def manage_xml_tags(self, param_name, t_name, is_child,save_changes=False):
-        """manage the workbook's parameters through
-        manipulation of workbook's xml"""
-        if self.temp_file_exists is True:
-            try:
-                if isinstance(ET.parse(self.tableau_workbook), ET.ElementTree):
-                    self.tableau_workbook = ET.parse(self.tableau_workbook)
-                    root = self.tableau_workbook.getroot()
-                    this_param = "'[{}]'".format(param_name)
-                    if is_child is True:
-                        re_xml_search = ".//*[@name={}]/{}".format(this_param, t_name)
-                        node_search = Node(value=root.find(re_xml_search))
-                    elif is_child is False:
-                        re_xml_search = ".[@name={}]".format(this_param, t_name)
-                        node_search = Node(value=root.find(re_xml_search))
-                    else:
-                        assert 1 == 0, 'Error! is_child not a boolean values \n'
-                else:
-                    raise TypeError("Err[workbook not converted to xml]\n")
-            except TypeError as te:
-                print(str(te))
-        else:
-            assert 1 == 0, "Workbook file does not exist!\n"
+class DataStruct:
+	WORKBOOKS = dict()
 
 
 
-    def update_workbook_parameter(self, parameter_name, tag_name, save=False):
-        """update specific parameter in tableau workbook xml"""
-        # create an instance of the Node class
-        try:
-            if isinstance(ET.parse(self.tableau_workbook), ET.ElementTree):
-                self.tableau_workbook = ET.parse(self.tableau_workbook)
-            else:
-                raise TypeError("Err[workbook not converted to xml]\n")
-        except TypeError as te:
-            return te
+class ServerAuth(object):
 
-        root = self.tableau_workbook.getroot()
-        this_param = "'[{}]'".format(parameter_name)
-        re_xml_search = ".//*[@name={}]/{}".format(this_param, tag_name)
-        node_search = Node(value=root.find(re_xml_search))
-        current = node_search.current
+	def __init__(self):
+		
+		self._server = None
+		self._username = None
+		self._password = None
+		self.is_signed_in = False
+		self.auth = dict()
 
-        child_current = current.getchildren()
+	@property
+	def server(self):
+		"""get server name"""
+		return self._server
+	@property
+	def username(self):
+		"""get username"""
+		return self._username
+	@property
+	def password(self):
+		"""get password"""
+		return self._password
+	@server.setter
+	def server(self, srvr: str):
+		self._server = str(srvr)
+	@username.setter
+	def username(self, un: str):
+		self._username = str(un)
+	@password.setter
+	def password(self, pw: str):
+		self._password = str(pw)
 
-        date_lambda = datetime.datetime.strptime((child_current[-1]
-                                                  .attrib.get('value')
-                                                  .strip('#')
-                                                  .strip(' 00:00:00')),
-                                                 "%Y-%m-%d")
-        current_date = datetime.date.today()
-        day_difference = int(str(datetime.date.today() - datetime.date(date_lambda.year,
-                                                                       date_lambda.month,
-                                                                       date_lambda.day)).split(" ")[0])
-        print("day_difference: {}".format(day_difference))
+	def login(self):
+		"""login to server"""
+		auth_ = tsc.TableauAuth(self.username, self.password)
+		print(auth_)
+		srvr_name = 'http://' + str(self.server)
+		print(srvr_name)
+		server_ = tsc.Server(srvr_name)
+		entry = {'Auth': auth_, 'Server': server_, 'Login Time': datetime.now}
+		# --- update the authe dictionary
+		self.auth.update(entry)
+		server_.auth.sign_in(auth_)
+		self.is_signed_in = True
 
-        if day_difference >= 7:
-            # the tableau xml needs to append a the most recent sunday date value
-            date_tag = "#{}#".format(current_date)
-            print('date tag: {}'.format(date_tag))
-            attribute = current.makeelement('member', {'value': date_tag})
-            print("adding attribute: {} ...".format(attribute))
-            current.append(attribute)
-            if save is True:
-                wb_name = "tableau_workbook_{}.twb".format(current_date)
-                self.tableau_workbook.write('C:\\Users\\wmurphy\\Desktop\\workbooks\\' + wb_name)
-                print("saving workbook changes ...\n")
-                os.remove('C:\\Users\\wmurphy\\Desktop\\workbooks\\DWM_1_30_18.twb')
-            else:
-                print('Changes not saved ... \n')
+	def logout(self):
+		"""logout of server"""
+		if self.is_signed_in:
+			self.auth.get('Server')
+			server.auth.sign_out()
+			self.is_signed_in = False
+			
 
-    def package_to_twbx(self):
-        """create a twbx workbook that
-        will be sent to tableau server"""
+
+class Workbook(ServerAuth):
+	"""get workbook information"""
+
+	def __init__(self):
+		super().__init__()
+		self.workbooks = None
+		self.current_workbook_ = None
+		self.current_wb_id_ = None
+		self.downloaded_workbook_ = None
+		self.file_storage_path = None
+		self.from_twbx_file = False
+		self.twb_file = None
+		
+	def get_workbook_list(self):
+		"""return a dict of workbooks
+		stored on the server"""
+		server = self.auth.get('Server')
+		all_workbooks, pagination_item = server.workbooks.get()
+		self.workbooks = {wb.name: wb.id for wb in all_workbooks}
+
+	def current_workbook(self, wb_name: str):
+		"""set workbook name"""
+		try:
+			if len(list(self.workbooks.keys())) > 0:
+				if wb_name in list(self.workbooks.keys()):
+					self.current_workbook_ = str(wb_name)
+					self.current_wb_id_ = self.workbooks.get(str(wb_name))
+				else:
+					print("Workbook name not found.")
+			else:
+				raise KeyError("Err: Workbook dict either not populated or workbok does not exist\n")
+		except KeyError as e:
+			print(str(e))
+
+	def download_workbook(self, path_to_dl: str):
+		"""download the workbook"""
+		self.file_storage_path = str(path_to_dl)
+		server = self.auth.get('Server')
+		server.workbooks.download(str(self.current_wb_id_), filepath=path_to_dl, no_extract=False)
+		wbs = [str(self.current_workbook_)+'.twb', str(self.current_workbook_)+'.twbx'] 
+		for i, _ in enumerate(wbs):
+			if wbs[i] in os.listdir(str(path_to_dl)):
+				print("Workbook located...\n")
+				self.downloaded_workbook_ = path_to_dl + '\\' + wbs[i]
+				break
+
+	def open_workbook_xml(self):
+		"""check to see if tableau workbook is zipped"""
+		if self.downloaded_workbook_ is not None:
+			if zipfile.is_zipfile(self.downloaded_workbook_):
+				self.from_twbx_file = True
+				twbx_ = ZipFile(self.downloaded_workbook_)
+				twbx_.extractall(path=self.file_storage_path)
+				path_files = [f for _, _, f in os.walk(self.file_storage_path) if len(f) > 0]
+				for file in path_files:
+					for sub in file:
+						current = sub.split(".")
+						for j, _ in enumerate(current):
+							if current[j] == 'twb':
+								self.twb_file = sub
+								print(self.twb_file)
+			else:
+				print("workbook is a .twb file, no extracting needed...\n")
+				self.twb_file = self.downloaded_workbook_
+	
+	def update_parameters(self, param_name: str, tag_name: str, save=False):
+		"""update the tableau workbook parameters"""
+		parsed_twb_file = et.parse(self.twb_file)
+		root = parsed_twb_file.getroot()
+		current_parameter = "'[{}]'".format(param_name)
+		xml_search_query = ".//*[@name={}]/{}".format(current_parameter, tag_name)
+		QUERY = root.find(xml_search_query)
+		query_children = QUERY.getchildren()
+
+		# --- setup for date field extraction
+		date_lambda = datetime.strptime((query_children[-1].attrib\
+														   .get('value')\
+														   .strip('#')\
+														   .strip(' 00:00:00')), "%Y-%m-%d")
+		current_date = date.today()
+		day_difference = int(str(date.today() - date(date_lambda.year, 
+									date_lambda.month, date_lambda.day)).split(" ")[0])
+		
+		# --- update parameter subtree
+		date_tag = "#{}#".format(current_date)
+		attribute = QUERY.makeelement('member', {'value': date_tag})
+		print("adding attribute: {} ...".format(attribute))
+		QUERY.append(attribute)
+		if save:
+			pprint(parsed_twb_file)
+			#parsed_twb_file.write(self.file_storage_path+ '//' + self.twb_file)
+
+	def build_archive(self, temp_file: str) -> None:
+		"""build archive file"""
+		os.chdir(self.file_storage_path)
+		print("current directory: {}".format(os.getcwd()))
+		for _, _, f in os.walk(str(os.getcwd())):
+			for file in f:
+				current = file.split(".")
+				if len(current) == 2 and current[1] == 'twbx':
+					os.remove(file)
+					print("removing {}.".format(file))
+					break
+			break
+		with ZipFile(str(temp_file), "w", compression=ZIP_DEFLATED) as archive:
+			for root_dir, _, f in os.walk(self.file_storage_path):
+				relative_dir = os.path.relpath(root_dir, self.file_storage_path)
+				for file in f:
+					temp_file_full_path = os.path.join(
+						self.file_storage_path, relative_dir, f)
+					zipname = os.path.join(relative_dir, f)
+					archive.write(temp_file_full_path, arcname=zipname)
+
+	def test_build_archive(self) -> None:
+		try:
+			if self.downloaded_workbook_ is not None:
+				os.chdir("C:\\Users\\Administrator\\Desktop\\TableauWorkbookFiles")
+				TEMP_TWB_INPUT_FILE  = ZipFile(self.downloaded_workbook_, "r")
+				TEMP_TWB_OUTPUT_FILE = ZipFile('WORKBOOK.twbx', 'w')
+				for item in TEMP_TWB_INPUT_FILE.infolist():
+					buff = TEMP_TWB_INPUT_FILE.read(item.filename)
+					if item.filename[-4:] != '.twb':
+						TEMP_TWB_OUTPUT_FILE.writestr(item, buff)
+				TEMP_TWB_OUTPUT_FILE.write("QueueSummary_py.twb")
+				TEMP_TWB_OUTPUT_FILE.close()
+				TEMP_TWB_OUTPUT_FILE.close()
+			else:
+				raise Exception("Err: tableau file does not exist.\n")
+		except Exception as e:
+			print(str(e))
+
+		"""
         os.chdir('C:\\Users\\wmurphy\\Desktop\\workbooks')
         twb_in = zipfile.ZipFile('18.twbx', 'r')
         twb_out = zipfile.ZipFile('WORKBOOK.twbx', 'w')
@@ -234,14 +217,55 @@ class Workbook(TableauServer):
         twb_out.close()
         twb_in.close()
 
-    def publish(self, wb_path, wb_name, proj_id):
-        """publish workbook to server"""
-        wb_to_publish = TSC.WorkbookItem(name=wb_name, project_id=proj_id)
-        wb_to_publish = self.creds_dict.get("server").workbooks.publish(wb_to_publish,
-                                                                        wb_path, 'CreateNew')
-        self.wrkbk_is_published = True
-        self.temp_file.workbook_is_published = self.wrkbk_is_published
-        self.temp_file.tear_down_dir()
-        self.logout()
+
+		"""		
 
 
+
+
+				
+
+
+def main():
+
+	# --- setup
+	#tabsrvr = ServerAuth()
+	tab_workbook_ = Workbook()
+	tab_workbook_.server = '172.31.32.54'
+	tab_workbook_.username = 'Administrator'
+	tab_workbook_.password = '=%vT8AFMj$'
+	
+	# --- login
+	login_ = tab_workbook_.login()
+	#print(tab_workbook_.is_signed_in)
+	
+	# --- get workbook info
+	tab_workbook_.get_workbook_list()
+	#pprint(tab_workbook_.workbooks)
+
+	# --- set current workbook
+	tab_workbook_.current_workbook(wb_name='Queue Summary Dashboards DW Version')
+	tab_workbook_.download_workbook(path_to_dl='C:\\Users\\Administrator\\Desktop\\TableauWorkbookFiles')
+	pprint(tab_workbook_.current_workbook_)
+	pprint(tab_workbook_.current_wb_id_)
+	tab_workbook_.open_workbook_xml()
+	wait_time = 0
+	os.chdir('C:\\Users\\Administrator\\Desktop\\TableauWorkbookFiles')
+	
+	while True:
+		print("waiting ...\n")
+		print("elapsed time: {}".format(wait_time))
+		time.sleep(1)
+		wait_time += 1
+		if os.path.exists('Queue Summary Dashboards DW Version.twb'):
+			tab_workbook_.update_parameters(param_name="Parameter 5", tag_name='members', save=True)
+			break
+
+	tab_workbook_.test_build_archive()
+	
+
+
+
+if __name__ == '__main__':
+	main()
+		
